@@ -562,8 +562,8 @@ select:focus {
 
   .booking-panel,
   .schedule-panel {
-    width: calc(100vw - 20px);
-    max-width: calc(100vw - 20px);
+    width: 100%;
+    max-width: 100%;
     border-radius: 0;
     border-left: 0;
     border-right: 0;
