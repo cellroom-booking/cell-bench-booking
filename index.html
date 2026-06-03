@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>细胞房超净台预约</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">细胞房超净台预约</p>
+        <h1>6 个细胞台预约表</h1>
+      </div>
+      <div class="header-actions" aria-label="页面操作">
+        <button class="ghost-button" id="copyDayButton" type="button" title="复制当前日期预约">
+          <span>复制今日表</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="app-shell">
+      <section class="booking-panel" aria-labelledby="formTitle">
+        <div class="panel-title">
+          <h2 id="formTitle">新增预约</h2>
+          <span class="storage-pill local" id="storageState">连接中</span>
+        </div>
+
+        <form id="bookingForm" class="booking-form">
+          <label>
+            日期
+            <input id="bookingDate" name="date" type="date" value="2026-06-03" required />
+          </label>
+
+          <label>
+            细胞台
+            <select id="benchSelect" name="bench" required></select>
+          </label>
+
+          <label>
+            预约人
+            <input id="personInput" name="person" type="text" placeholder="输入姓名" autocomplete="off" required />
+          </label>
+
+          <div class="time-row">
+            <label>
+              开始
+              <input id="startTime" name="start" type="time" step="300" value="09:00" required />
+            </label>
+            <label>
+              结束
+              <input id="endTime" name="end" type="time" step="300" value="10:00" required />
+            </label>
+          </div>
+
+          <div id="formMessage" class="form-message" role="status" aria-live="polite"></div>
+
+          <button class="primary-button" id="submitButton" type="submit">
+            <span>添加预约</span>
+          </button>
+        </form>
+
+        <div class="quick-info">
+          <div>
+            <span class="info-value" id="bookingCount">0</span>
+            <span class="info-label">当前日期预约</span>
+          </div>
+          <div>
+            <span class="info-value" id="freeCount">0</span>
+            <span class="info-label">空闲细胞台</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="schedule-panel" aria-labelledby="scheduleTitle">
+        <div class="schedule-toolbar">
+          <div>
+            <h2 id="scheduleTitle">预约时间轴</h2>
+            <p id="daySummary">2026-06-03</p>
+          </div>
+          <div class="schedule-controls">
+            <label class="date-jump">
+              查看日期
+              <input id="viewDate" type="date" value="2026-06-03" />
+            </label>
+            <label class="bench-filter">
+              显示范围
+              <select id="benchFilter"></select>
+            </label>
+          </div>
+        </div>
+
+        <div class="time-axis" aria-hidden="true">
+          <span>07:00</span>
+          <span>09:00</span>
+          <span>11:00</span>
+          <span>13:00</span>
+          <span>15:00</span>
+          <span>17:00</span>
+          <span>19:00</span>
+          <span>21:00</span>
+          <span>23:00</span>
+        </div>
+
+        <div id="scheduleGrid" class="schedule-grid"></div>
+      </section>
+    </main>
+
+    <template id="benchTemplate">
+      <article class="bench-card">
+        <div class="bench-heading">
+          <div>
+            <h3></h3>
+            <p></p>
+          </div>
+          <span class="bench-status"></span>
+        </div>
+        <div class="timeline" aria-label="预约时间轴"></div>
+        <div class="booking-list"></div>
+      </article>
+    </template>
+
+    <template id="bookingTemplate">
+      <div class="booking-item">
+        <div>
+          <strong class="booking-time"></strong>
+          <span class="booking-person"></span>
+        </div>
+        <button class="icon-button delete-booking" type="button" title="删除预约" aria-label="删除预约">
+          <span aria-hidden="true">×</span>
+        </button>
+      </div>
+    </template>
+
+    <script src="./vendor/supabase-js-2.107.0.min.js"></script>
+    <script src="./config.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
