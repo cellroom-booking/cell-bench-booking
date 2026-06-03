@@ -6,6 +6,7 @@ const DAY_END = 23 * 60;
 const DAY_RANGE = DAY_END - DAY_START;
 const REFRESH_INTERVAL_MS = 60 * 1000;
 const RECONNECT_DELAY_MS = 5 * 1000;
+const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 const benches = [
   { id: "west-1-inside", room: "西区细胞房1", position: "里面", color: "#1f7a5c" },
@@ -41,6 +42,12 @@ const elements = {
   freeCount: document.querySelector("#freeCount"),
   daySummary: document.querySelector("#daySummary"),
   copyDayButton: document.querySelector("#copyDayButton"),
+  exportStartDate: document.querySelector("#exportStartDate"),
+  exportEndDate: document.querySelector("#exportEndDate"),
+  exportStartTime: document.querySelector("#exportStartTime"),
+  exportEndTime: document.querySelector("#exportEndTime"),
+  exportButton: document.querySelector("#exportButton"),
+  exportMessage: document.querySelector("#exportMessage"),
   storageState: document.querySelector("#storageState"),
   benchTemplate: document.querySelector("#benchTemplate"),
   bookingTemplate: document.querySelector("#bookingTemplate"),
@@ -52,11 +59,14 @@ async function init() {
   fillBenchOptions();
   elements.bookingDate.value = selectedDate;
   elements.viewDate.value = selectedDate;
+  elements.exportStartDate.value = selectedDate;
+  elements.exportEndDate.value = selectedDate;
   elements.form.addEventListener("submit", handleSubmit);
   elements.viewDate.addEventListener("change", handleDateChange);
   elements.bookingDate.addEventListener("change", handleDateChange);
   elements.benchFilter.addEventListener("change", handleBenchFilterChange);
   elements.copyDayButton.addEventListener("click", copyCurrentDay);
+  elements.exportButton.addEventListener("click", handleExport);
 
   render();
   await startDataLayer();
@@ -566,6 +576,377 @@ async function copyCurrentDay() {
   }
 }
 
+async function handleExport() {
+  const range = getExportRange();
+  if (!range.ok) {
+    showExportMessage(range.message, "error");
+    return;
+  }
+
+  setExportBusy(true);
+  clearExportMessage();
+
+  try {
+    const exportBookings = await fetchExportBookings(range);
+    if (exportBookings.length === 0) {
+      showExportMessage("所选范围内没有预约记录。", "error");
+      return;
+    }
+
+    const rows = buildExportRows(exportBookings);
+    const fileName = buildExportFileName(range);
+    downloadXlsx("预约记录", rows, fileName);
+    showExportMessage(`已导出 ${exportBookings.length} 条预约记录。`, "success");
+  } catch (error) {
+    console.error("Export failed", error);
+    showExportMessage("导出失败，请检查网络后重试。", "error");
+  } finally {
+    setExportBusy(false);
+  }
+}
+
+function getExportRange() {
+  const startDate = elements.exportStartDate.value;
+  const endDate = elements.exportEndDate.value;
+  const startTime = elements.exportStartTime.value;
+  const endTime = elements.exportEndTime.value;
+
+  if (!startDate || !endDate || !startTime || !endTime) {
+    return { ok: false, message: "请填写完整的导出日期和时间范围。" };
+  }
+
+  if (endDate < startDate) {
+    return { ok: false, message: "结束日期不能早于开始日期。" };
+  }
+
+  if (timeToMinutes(endTime) <= timeToMinutes(startTime)) {
+    return { ok: false, message: "结束时间必须晚于开始时间。" };
+  }
+
+  return { ok: true, startDate, endDate, startTime, endTime };
+}
+
+async function fetchExportBookings(range) {
+  let sourceBookings = [];
+
+  if (dataMode === "supabase" && supabaseClient) {
+    const { data, error } = await supabaseClient
+      .from(TABLE_NAME)
+      .select("id,bench_id,booking_date,start_time,end_time,person,created_at")
+      .gte("booking_date", range.startDate)
+      .lte("booking_date", range.endDate)
+      .order("booking_date", { ascending: true })
+      .order("start_time", { ascending: true })
+      .limit(5000);
+
+    if (error) {
+      throw error;
+    }
+
+    sourceBookings = data.map(fromSupabaseRow);
+  } else {
+    sourceBookings = loadLocalBookings();
+  }
+
+  return sourceBookings
+    .filter((item) => {
+      return item.date >= range.startDate && item.date <= range.endDate && bookingOverlapsTimeRange(item, range);
+    })
+    .sort(compareBookings);
+}
+
+function bookingOverlapsTimeRange(item, range) {
+  const bookingStart = timeToMinutes(item.start);
+  const bookingEnd = timeToMinutes(item.end);
+  const rangeStart = timeToMinutes(range.startTime);
+  const rangeEnd = timeToMinutes(range.endTime);
+  return bookingStart < rangeEnd && bookingEnd > rangeStart;
+}
+
+function compareBookings(a, b) {
+  if (a.date !== b.date) {
+    return a.date.localeCompare(b.date);
+  }
+
+  if (a.benchId !== b.benchId) {
+    return benches.findIndex((bench) => bench.id === a.benchId) - benches.findIndex((bench) => bench.id === b.benchId);
+  }
+
+  return timeToMinutes(a.start) - timeToMinutes(b.start);
+}
+
+function buildExportRows(exportBookings) {
+  const rows = [["日期", "细胞房", "位置", "细胞台", "开始时间", "结束时间", "预约人", "创建时间"]];
+
+  exportBookings.forEach((item) => {
+    const bench = benches.find((candidate) => candidate.id === item.benchId);
+    const room = bench ? bench.room : item.benchId;
+    const position = bench ? bench.position : "";
+    rows.push([
+      item.date,
+      room,
+      position,
+      `${room} ${position}`.trim(),
+      item.start,
+      item.end,
+      item.person,
+      formatCreatedAt(item.createdAt),
+    ]);
+  });
+
+  return rows;
+}
+
+function buildExportFileName(range) {
+  const startTime = range.startTime.replace(":", "");
+  const endTime = range.endTime.replace(":", "");
+  return `cell-bench-bookings_${range.startDate}_${range.endDate}_${startTime}-${endTime}.xlsx`;
+}
+
+function downloadXlsx(sheetName, rows, fileName) {
+  const files = createXlsxFiles(sheetName, rows);
+  const zipBytes = createStoredZip(files);
+  const blob = new Blob([zipBytes], { type: XLSX_MIME });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function createXlsxFiles(sheetName, rows) {
+  const safeSheetName = sanitizeSheetName(sheetName);
+  return [
+    {
+      name: "[Content_Types].xml",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+</Types>`,
+    },
+    {
+      name: "_rels/.rels",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>`,
+    },
+    {
+      name: "docProps/app.xml",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
+  <Application>Cellroom Booking</Application>
+</Properties>`,
+    },
+    {
+      name: "docProps/core.xml",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <dc:title>细胞房超净台预约记录</dc:title>
+  <dc:creator>Cellroom Booking</dc:creator>
+  <cp:lastModifiedBy>Cellroom Booking</cp:lastModifiedBy>
+  <dcterms:created xsi:type="dcterms:W3CDTF">${new Date().toISOString()}</dcterms:created>
+  <dcterms:modified xsi:type="dcterms:W3CDTF">${new Date().toISOString()}</dcterms:modified>
+</cp:coreProperties>`,
+    },
+    {
+      name: "xl/workbook.xml",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="${escapeXml(safeSheetName)}" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`,
+    },
+    {
+      name: "xl/_rels/workbook.xml.rels",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>`,
+    },
+    {
+      name: "xl/worksheets/sheet1.xml",
+      content: createWorksheetXml(rows),
+    },
+  ];
+}
+
+function createWorksheetXml(rows) {
+  const lastColumn = getColumnName(Math.max(1, rows[0]?.length || 1));
+  const lastRow = Math.max(1, rows.length);
+  const sheetData = rows
+    .map((row, rowIndex) => {
+      const rowNumber = rowIndex + 1;
+      const cells = row
+        .map((value, columnIndex) => {
+          const cellRef = `${getColumnName(columnIndex + 1)}${rowNumber}`;
+          return `<c r="${cellRef}" t="inlineStr"><is><t>${escapeXml(String(value ?? ""))}</t></is></c>`;
+        })
+        .join("");
+      return `<row r="${rowNumber}">${cells}</row>`;
+    })
+    .join("");
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:${lastColumn}${lastRow}"/>
+  <sheetViews><sheetView workbookViewId="0"/></sheetViews>
+  <sheetFormatPr defaultRowHeight="18"/>
+  <cols>
+    <col min="1" max="1" width="14" customWidth="1"/>
+    <col min="2" max="4" width="18" customWidth="1"/>
+    <col min="5" max="6" width="12" customWidth="1"/>
+    <col min="7" max="7" width="14" customWidth="1"/>
+    <col min="8" max="8" width="24" customWidth="1"/>
+  </cols>
+  <sheetData>${sheetData}</sheetData>
+  <autoFilter ref="A1:${lastColumn}${lastRow}"/>
+</worksheet>`;
+}
+
+function createStoredZip(files) {
+  const textEncoder = new TextEncoder();
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+
+  files.forEach((file) => {
+    const nameBytes = textEncoder.encode(file.name);
+    const dataBytes = textEncoder.encode(file.content);
+    const crc = crc32(dataBytes);
+    const localHeader = createLocalFileHeader(nameBytes, dataBytes, crc);
+    const centralHeader = createCentralDirectoryHeader(nameBytes, dataBytes, crc, offset);
+    localParts.push(localHeader, dataBytes);
+    centralParts.push(centralHeader);
+    offset += localHeader.length + dataBytes.length;
+  });
+
+  const centralDirectory = concatUint8Arrays(centralParts);
+  const endRecord = createEndOfCentralDirectory(files.length, centralDirectory.length, offset);
+  return concatUint8Arrays([...localParts, centralDirectory, endRecord]);
+}
+
+function createLocalFileHeader(nameBytes, dataBytes, crc) {
+  const header = new Uint8Array(30 + nameBytes.length);
+  const view = new DataView(header.buffer);
+  writeUint32(view, 0, 0x04034b50);
+  writeUint16(view, 4, 20);
+  writeUint16(view, 6, 0x0800);
+  writeUint16(view, 8, 0);
+  writeUint16(view, 10, 0);
+  writeUint16(view, 12, 33);
+  writeUint32(view, 14, crc);
+  writeUint32(view, 18, dataBytes.length);
+  writeUint32(view, 22, dataBytes.length);
+  writeUint16(view, 26, nameBytes.length);
+  writeUint16(view, 28, 0);
+  header.set(nameBytes, 30);
+  return header;
+}
+
+function createCentralDirectoryHeader(nameBytes, dataBytes, crc, localOffset) {
+  const header = new Uint8Array(46 + nameBytes.length);
+  const view = new DataView(header.buffer);
+  writeUint32(view, 0, 0x02014b50);
+  writeUint16(view, 4, 20);
+  writeUint16(view, 6, 20);
+  writeUint16(view, 8, 0x0800);
+  writeUint16(view, 10, 0);
+  writeUint16(view, 12, 0);
+  writeUint16(view, 14, 33);
+  writeUint32(view, 16, crc);
+  writeUint32(view, 20, dataBytes.length);
+  writeUint32(view, 24, dataBytes.length);
+  writeUint16(view, 28, nameBytes.length);
+  writeUint16(view, 30, 0);
+  writeUint16(view, 32, 0);
+  writeUint16(view, 34, 0);
+  writeUint16(view, 36, 0);
+  writeUint32(view, 38, 0);
+  writeUint32(view, 42, localOffset);
+  header.set(nameBytes, 46);
+  return header;
+}
+
+function createEndOfCentralDirectory(fileCount, centralSize, centralOffset) {
+  const record = new Uint8Array(22);
+  const view = new DataView(record.buffer);
+  writeUint32(view, 0, 0x06054b50);
+  writeUint16(view, 4, 0);
+  writeUint16(view, 6, 0);
+  writeUint16(view, 8, fileCount);
+  writeUint16(view, 10, fileCount);
+  writeUint32(view, 12, centralSize);
+  writeUint32(view, 16, centralOffset);
+  writeUint16(view, 20, 0);
+  return record;
+}
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (let index = 0; index < bytes.length; index += 1) {
+    crc = (crc >>> 8) ^ CRC_TABLE[(crc ^ bytes[index]) & 0xff];
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < 256; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    }
+    table[index] = value >>> 0;
+  }
+  return table;
+})();
+
+function concatUint8Arrays(parts) {
+  const totalLength = parts.reduce((total, part) => total + part.length, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  parts.forEach((part) => {
+    result.set(part, offset);
+    offset += part.length;
+  });
+  return result;
+}
+
+function writeUint16(view, offset, value) {
+  view.setUint16(offset, value, true);
+}
+
+function writeUint32(view, offset, value) {
+  view.setUint32(offset, value >>> 0, true);
+}
+
+function getColumnName(number) {
+  let name = "";
+  let value = number;
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    name = String.fromCharCode(65 + remainder) + name;
+    value = Math.floor((value - 1) / 26);
+  }
+  return name;
+}
+
+function sanitizeSheetName(value) {
+  return String(value).replace(/[\[\]:*?/\\]/g, " ").slice(0, 31) || "预约记录";
+}
+
 function fromSupabaseRow(row) {
   return {
     id: row.id,
@@ -632,6 +1013,24 @@ function formatDate(value) {
   return `${year}-${month}-${day}`;
 }
 
+function formatCreatedAt(value) {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}`;
+}
+
 function setStorageState(text, state) {
   elements.storageState.textContent = text;
   elements.storageState.className = `storage-pill ${state}`;
@@ -641,14 +1040,29 @@ function setBusy(isBusy) {
   elements.submitButton.disabled = isBusy;
 }
 
+function setExportBusy(isBusy) {
+  elements.exportButton.disabled = isBusy;
+  elements.exportButton.textContent = isBusy ? "导出中..." : "导出 Excel";
+}
+
 function showMessage(message, type) {
   elements.formMessage.textContent = message;
   elements.formMessage.className = `form-message ${type}`;
 }
 
+function showExportMessage(message, type) {
+  elements.exportMessage.textContent = message;
+  elements.exportMessage.className = `form-message ${type}`;
+}
+
 function clearMessage() {
   elements.formMessage.textContent = "";
   elements.formMessage.className = "form-message";
+}
+
+function clearExportMessage() {
+  elements.exportMessage.textContent = "";
+  elements.exportMessage.className = "form-message";
 }
 
 function clamp(value, min, max) {
@@ -663,6 +1077,19 @@ function escapeHtml(value) {
       ">": "&gt;",
       '"': "&quot;",
       "'": "&#039;",
+    };
+    return entities[character];
+  });
+}
+
+function escapeXml(value) {
+  return value.replace(/[<>&"']/g, (character) => {
+    const entities = {
+      "<": "&lt;",
+      ">": "&gt;",
+      "&": "&amp;",
+      '"': "&quot;",
+      "'": "&apos;",
     };
     return entities[character];
   });

@@ -70,6 +70,32 @@
             <span class="info-label">空闲细胞台</span>
           </div>
         </div>
+
+        <section class="export-panel" aria-labelledby="exportTitle">
+          <h2 id="exportTitle">导出记录</h2>
+          <div class="export-grid">
+            <label>
+              开始日期
+              <input id="exportStartDate" type="date" value="2026-06-03" />
+            </label>
+            <label>
+              结束日期
+              <input id="exportEndDate" type="date" value="2026-06-03" />
+            </label>
+            <label>
+              开始时间
+              <input id="exportStartTime" type="time" step="300" value="07:00" />
+            </label>
+            <label>
+              结束时间
+              <input id="exportEndTime" type="time" step="300" value="23:00" />
+            </label>
+          </div>
+          <button class="ghost-button export-button" id="exportButton" type="button">
+            <span>导出 Excel</span>
+          </button>
+          <div id="exportMessage" class="form-message" role="status" aria-live="polite"></div>
+        </section>
       </section>
 
       <section class="schedule-panel" aria-labelledby="scheduleTitle">

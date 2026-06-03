@@ -323,6 +323,25 @@ select:focus {
   font-size: 12px;
 }
 
+.export-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.export-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+}
+
+.export-button {
+  width: 100%;
+}
+
 .schedule-panel {
   min-width: 0;
   padding: 18px;
@@ -622,6 +641,17 @@ select:focus {
   .quick-info > div {
     min-height: 64px;
     padding: 10px;
+  }
+
+  .export-panel {
+    gap: 10px;
+    margin-top: 12px;
+    padding-top: 12px;
+  }
+
+  .export-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
   }
 
   .schedule-toolbar {
