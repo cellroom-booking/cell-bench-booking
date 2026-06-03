@@ -1,8 +1,8 @@
 const STORAGE_KEY = "cellBenchBookings.v2";
 const TABLE_NAME = "bookings";
 const DEFAULT_DATE = "2026-06-03";
-const DAY_START = 7 * 60;
-const DAY_END = 23 * 60;
+const DAY_START = 0;
+const DAY_END = 24 * 60;
 const DAY_RANGE = DAY_END - DAY_START;
 const REFRESH_INTERVAL_MS = 60 * 1000;
 const RECONNECT_DELAY_MS = 5 * 1000;
@@ -984,7 +984,7 @@ function mapDatabaseError(error) {
   }
 
   if (error.code === "23514") {
-    return "预约数据不符合表规则，请检查姓名和时间。";
+    return "预约数据不符合表规则；如果是 07:00 前或 23:00 后，请先在 Supabase 运行全天预约 SQL。";
   }
 
   if (error.code === "42501") {

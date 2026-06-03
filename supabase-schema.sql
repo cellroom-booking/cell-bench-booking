@@ -18,9 +18,28 @@ create table if not exists public.bookings (
   end_time time not null,
   person text not null check (char_length(trim(person)) between 1 and 40),
   created_at timestamptz not null default now(),
-  check (end_time > start_time),
-  check (start_time >= time '07:00' and end_time <= time '23:00')
+  check (end_time > start_time)
 );
+
+do $$
+declare
+  constraint_record record;
+begin
+  for constraint_record in
+    select conname, pg_get_constraintdef(oid) as definition
+    from pg_constraint
+    where conrelid = 'public.bookings'::regclass
+      and contype = 'c'
+      and pg_get_constraintdef(oid) ilike '%start_time%'
+      and pg_get_constraintdef(oid) ilike '%end_time%'
+      and (
+        pg_get_constraintdef(oid) ilike '%07:00%'
+        or pg_get_constraintdef(oid) ilike '%23:00%'
+      )
+  loop
+    execute format('alter table public.bookings drop constraint %I', constraint_record.conname);
+  end loop;
+end $$;
 
 alter table public.bookings
   drop constraint if exists no_booking_overlap;

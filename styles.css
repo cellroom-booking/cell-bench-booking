@@ -426,9 +426,9 @@ select:focus {
     repeating-linear-gradient(
       to right,
       transparent 0,
-      transparent calc(100% / 16 - 1px),
-      #e5eae5 calc(100% / 16 - 1px),
-      #e5eae5 calc(100% / 16)
+      transparent calc(100% / 24 - 1px),
+      #e5eae5 calc(100% / 24 - 1px),
+      #e5eae5 calc(100% / 24)
     ),
     #f7faf8;
 }

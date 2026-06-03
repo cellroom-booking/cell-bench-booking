@@ -45,11 +45,11 @@
           <div class="time-row">
             <label>
               开始
-              <input id="startTime" name="start" type="time" step="300" value="09:00" required />
+              <input id="startTime" name="start" type="time" step="60" value="09:00" required />
             </label>
             <label>
               结束
-              <input id="endTime" name="end" type="time" step="300" value="10:00" required />
+              <input id="endTime" name="end" type="time" step="60" value="10:00" required />
             </label>
           </div>
 
@@ -84,11 +84,11 @@
             </label>
             <label>
               开始时间
-              <input id="exportStartTime" type="time" step="300" value="07:00" />
+              <input id="exportStartTime" type="time" step="60" value="00:00" />
             </label>
             <label>
               结束时间
-              <input id="exportEndTime" type="time" step="300" value="23:00" />
+              <input id="exportEndTime" type="time" step="60" value="23:59" />
             </label>
           </div>
           <button class="ghost-button export-button" id="exportButton" type="button">
@@ -117,15 +117,15 @@
         </div>
 
         <div class="time-axis" aria-hidden="true">
-          <span>07:00</span>
+          <span>00:00</span>
+          <span>03:00</span>
+          <span>06:00</span>
           <span>09:00</span>
-          <span>11:00</span>
-          <span>13:00</span>
+          <span>12:00</span>
           <span>15:00</span>
-          <span>17:00</span>
-          <span>19:00</span>
+          <span>18:00</span>
           <span>21:00</span>
-          <span>23:00</span>
+          <span>24:00</span>
         </div>
 
         <div id="scheduleGrid" class="schedule-grid"></div>

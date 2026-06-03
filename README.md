@@ -9,12 +9,14 @@
 - `app.js`: 预约逻辑、冲突检查、Supabase 实时订阅
 - `config.js`: Supabase 项目配置
 - `supabase-schema.sql`: Supabase 建表和权限 SQL
+- `supabase-allow-full-day.sql`: 已建表项目放开全天预约时间的迁移 SQL
 
 ## 当前功能
 
 - 6 个细胞台：西区细胞房1 里面/外面、西区细胞房2 里面/外面、东区细胞房 靠窗/靠墙
 - 支持新增预约、删除预约、按日期查看、复制当天预约表
 - 支持按日期区间和每天时间段导出 `.xlsx` Excel 表
+- 支持全天预约，同一天内可预约 `00:00-23:59` 范围内的时间段
 - 手机端优先：支持按细胞台筛选，手机上优先显示清晰的预约列表
 - 支持多人实时同步
 - 数据库级冲突保护：同一细胞台、同一日期，时间段不能重叠
@@ -29,6 +31,8 @@
 2. New project，新建一个免费项目。
 3. 进入项目后打开 `SQL Editor`。
 4. 复制 `supabase-schema.sql` 的全部内容并运行。
+
+如果项目之前已经运行过旧版 SQL，并且预约 `07:00` 以前或 `23:00` 以后会失败，请在 SQL Editor 里再运行一次 `supabase-allow-full-day.sql`。
 
 ### 2. 填写 `config.js`
 
