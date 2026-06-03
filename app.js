@@ -222,7 +222,8 @@ function scheduleRealtimeReconnect() {
 
 function handleRealtimePayload(payload) {
   if (payload.eventType === "DELETE") {
-    if (payload.old.booking_date !== selectedDate) {
+    const deletedDate = payload.old.booking_date;
+    if (deletedDate && deletedDate !== selectedDate) {
       return;
     }
     bookings = bookings.filter((item) => item.id !== payload.old.id);
