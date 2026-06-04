@@ -37,12 +37,13 @@ const elements = {
   benchFilter: document.querySelector("#benchFilter"),
   personInput: document.querySelector("#personInput"),
   startTime: document.querySelector("#startTime"),
-  endTime: document.querySelector("#endTime"),
+  durationSelect: document.querySelector("#durationSelect"),
   formMessage: document.querySelector("#formMessage"),
   submitButton: document.querySelector("#submitButton"),
   scheduleGrid: document.querySelector("#scheduleGrid"),
   bookingCount: document.querySelector("#bookingCount"),
   freeCount: document.querySelector("#freeCount"),
+  freeBenchList: document.querySelector("#freeBenchList"),
   daySummary: document.querySelector("#daySummary"),
   copyDayButton: document.querySelector("#copyDayButton"),
   exportStartDate: document.querySelector("#exportStartDate"),
@@ -64,6 +65,9 @@ async function init() {
   elements.form.addEventListener("submit", handleSubmit);
   elements.viewDate.addEventListener("change", handleDateChange);
   elements.bookingDate.addEventListener("change", handleDateChange);
+  elements.benchSelect.addEventListener("change", render);
+  elements.startTime.addEventListener("change", render);
+  elements.durationSelect.addEventListener("change", render);
   elements.benchFilter.addEventListener("change", handleBenchFilterChange);
   elements.copyDayButton.addEventListener("click", copyCurrentDay);
   elements.exportButton.addEventListener("click", handleExport);
@@ -335,7 +339,7 @@ async function handleSubmit(event) {
     date: elements.bookingDate.value,
     person: elements.personInput.value.trim(),
     start: elements.startTime.value,
-    end: elements.endTime.value,
+    end: calculateEndTime(elements.startTime.value, elements.durationSelect.value),
     createdAt: new Date().toISOString(),
   };
 
@@ -385,7 +389,7 @@ async function saveNewBooking(nextBooking) {
 
 function validateBooking(nextBooking) {
   if (!nextBooking.date || !nextBooking.benchId || !nextBooking.person || !nextBooking.start || !nextBooking.end) {
-    return { ok: false, message: "请把日期、细胞台、姓名和时间填写完整。" };
+    return { ok: false, message: "请把日期、细胞台、姓名、开始时间和使用时长填写完整。" };
   }
 
   if (nextBooking.person.length > 40) {
@@ -394,8 +398,20 @@ function validateBooking(nextBooking) {
 
   const start = timeToMinutes(nextBooking.start);
   const end = timeToMinutes(nextBooking.end);
+  if (start % 30 !== 0) {
+    return { ok: false, message: "开始时间请按半小时选择，例如 09:00 或 09:30。" };
+  }
+
   if (end <= start) {
-    return { ok: false, message: "结束时间必须晚于开始时间。" };
+    return { ok: false, message: "使用时长至少需要 30 分钟。" };
+  }
+
+  if (end - start < 30) {
+    return { ok: false, message: "一次预约最少 30 分钟。" };
+  }
+
+  if (end > DAY_END) {
+    return { ok: false, message: "预约不能跨到第二天，请缩短使用时长或提前开始。" };
   }
 
   const conflict = findConflict(nextBooking);
@@ -467,11 +483,13 @@ function render() {
     .filter((item) => item.date === selectedDate)
     .sort((a, b) => timeToMinutes(a.start) - timeToMinutes(b.start));
   const visibleBenches = getVisibleBenches();
+  const slotAvailability = getSlotAvailability(dayBookings);
 
   elements.scheduleGrid.innerHTML = "";
   elements.daySummary.textContent = getDaySummary(dayBookings.length);
   elements.bookingCount.textContent = String(dayBookings.length);
-  elements.freeCount.textContent = String(countFreeBenches(dayBookings));
+  elements.freeCount.textContent = slotAvailability.countText;
+  elements.freeBenchList.textContent = slotAvailability.message;
 
   visibleBenches.forEach((bench) => {
     const benchBookings = dayBookings.filter((item) => item.benchId === bench.id);
@@ -496,6 +514,50 @@ function getDaySummary(count) {
   const bench = benches.find((item) => item.id === selectedBenchFilter);
   const label = bench ? `${bench.room} ${bench.position}` : "筛选细胞台";
   return `${formatDate(selectedDate)}，${label}`;
+}
+
+function getSlotAvailability(dayBookings) {
+  const start = elements.startTime.value;
+  const end = calculateEndTime(start, elements.durationSelect.value);
+
+  if (!start || !end) {
+    return { countText: "-", message: "选择开始时间和使用时长后显示" };
+  }
+
+  const startMinutes = timeToMinutes(start);
+  const endMinutes = timeToMinutes(end);
+  if (startMinutes % 30 !== 0) {
+    return { countText: "-", message: "开始时间请按半小时选择" };
+  }
+
+  if (endMinutes <= startMinutes || endMinutes > DAY_END) {
+    return { countText: "0", message: "所选时长超出当天，请缩短时长" };
+  }
+
+  const freeBenches = benches.filter((bench) => {
+    return !dayBookings.some((booking) => {
+      if (booking.benchId !== bench.id) {
+        return false;
+      }
+
+      const existingStart = timeToMinutes(booking.start);
+      const existingEnd = timeToMinutes(booking.end);
+      return startMinutes < existingEnd && endMinutes > existingStart;
+    });
+  });
+
+  if (freeBenches.length === 0) {
+    return { countText: "0", message: `${start}-${end} 全部已占用` };
+  }
+
+  const selectedBench = benches.find((bench) => bench.id === elements.benchSelect.value);
+  const selectedIsFree = selectedBench ? freeBenches.some((bench) => bench.id === selectedBench.id) : false;
+  const statusText = selectedBench && !selectedIsFree ? "当前选择已占用；空闲：" : "当前选择可用；空闲：";
+
+  return {
+    countText: String(freeBenches.length),
+    message: `${start}-${end} ${statusText}${freeBenches.map((bench) => `${bench.room} ${bench.position}`).join("、")}`,
+  };
 }
 
 function renderBench(bench, benchBookings) {
@@ -1028,14 +1090,28 @@ function mapDatabaseError(error) {
   return error.message || "数据库操作失败。";
 }
 
-function countFreeBenches(dayBookings) {
-  const occupied = new Set(dayBookings.map((item) => item.benchId));
-  return benches.length - occupied.size;
-}
-
 function timeToMinutes(value) {
   const [hours, minutes] = value.split(":").map(Number);
   return hours * 60 + minutes;
+}
+
+function calculateEndTime(startTime, durationValue) {
+  if (!startTime || !durationValue) {
+    return "";
+  }
+
+  const duration = Number(durationValue);
+  if (!Number.isFinite(duration)) {
+    return "";
+  }
+
+  return minutesToTime(timeToMinutes(startTime) + duration);
+}
+
+function minutesToTime(totalMinutes) {
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
 function trimTime(value) {

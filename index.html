@@ -45,11 +45,23 @@
           <div class="time-row">
             <label>
               开始
-              <input id="startTime" name="start" type="time" step="60" value="09:00" required />
+              <input id="startTime" name="start" type="time" step="1800" min="00:00" max="23:30" value="09:00" required />
             </label>
             <label>
-              结束
-              <input id="endTime" name="end" type="time" step="60" value="10:00" required />
+              使用时长
+              <select id="durationSelect" name="duration" required>
+                <option value="30">30 分钟</option>
+                <option value="60" selected>1 小时</option>
+                <option value="90">1.5 小时</option>
+                <option value="120">2 小时</option>
+                <option value="150">2.5 小时</option>
+                <option value="180">3 小时</option>
+                <option value="240">4 小时</option>
+                <option value="300">5 小时</option>
+                <option value="360">6 小时</option>
+                <option value="480">8 小时</option>
+                <option value="720">12 小时</option>
+              </select>
             </label>
           </div>
 
@@ -67,7 +79,8 @@
           </div>
           <div>
             <span class="info-value" id="freeCount">0</span>
-            <span class="info-label">空闲细胞台</span>
+            <span class="info-label">所选时段空闲</span>
+            <span class="free-bench-list" id="freeBenchList">选择时间后显示</span>
           </div>
         </div>
 

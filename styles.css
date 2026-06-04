@@ -296,7 +296,7 @@ select:focus {
 
 .quick-info {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: 1fr;
   gap: 10px;
   margin-top: 18px;
 }
@@ -321,6 +321,15 @@ select:focus {
   margin-top: 8px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.free-bench-list {
+  display: block;
+  margin-top: 8px;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .export-panel {
@@ -633,7 +642,7 @@ select:focus {
   }
 
   .quick-info {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: 1fr;
     gap: 8px;
     margin-top: 10px;
   }
