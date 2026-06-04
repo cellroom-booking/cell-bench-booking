@@ -1,6 +1,7 @@
 const STORAGE_KEY = "cellBenchBookings.v2";
 const TABLE_NAME = "bookings";
-const DEFAULT_DATE = "2026-06-03";
+const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
+const DEFAULT_DATE = getBeijingDate();
 const DAY_START = 0;
 const DAY_END = 24 * 60;
 const DAY_RANGE = DAY_END - DAY_START;
@@ -19,6 +20,8 @@ const benches = [
 
 let bookings = [];
 let selectedDate = DEFAULT_DATE;
+let lastKnownBeijingDate = DEFAULT_DATE;
+let autoFollowToday = true;
 let selectedBenchFilter = "all";
 let dataMode = "local";
 let supabaseClient = null;
@@ -57,10 +60,7 @@ init();
 
 async function init() {
   fillBenchOptions();
-  elements.bookingDate.value = selectedDate;
-  elements.viewDate.value = selectedDate;
-  elements.exportStartDate.value = selectedDate;
-  elements.exportEndDate.value = selectedDate;
+  setActiveDate(selectedDate, { syncExport: true });
   elements.form.addEventListener("submit", handleSubmit);
   elements.viewDate.addEventListener("change", handleDateChange);
   elements.bookingDate.addEventListener("change", handleDateChange);
@@ -71,6 +71,22 @@ async function init() {
   render();
   await startDataLayer();
   render();
+}
+
+function getBeijingDate(now = new Date()) {
+  return new Date(now.getTime() + BEIJING_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+function setActiveDate(nextDate, options = {}) {
+  const previousDate = selectedDate;
+  selectedDate = nextDate || getBeijingDate();
+  elements.bookingDate.value = selectedDate;
+  elements.viewDate.value = selectedDate;
+
+  if (options.syncExport || (elements.exportStartDate.value === previousDate && elements.exportEndDate.value === previousDate)) {
+    elements.exportStartDate.value = selectedDate;
+    elements.exportEndDate.value = selectedDate;
+  }
 }
 
 function createId() {
@@ -179,6 +195,7 @@ function startPeriodicRefresh() {
     }
 
     try {
+      handleBeijingDateRollover();
       await fetchRemoteBookings();
       render();
     } catch (error) {
@@ -187,6 +204,23 @@ function startPeriodicRefresh() {
       scheduleRealtimeReconnect();
     }
   }, REFRESH_INTERVAL_MS);
+}
+
+function handleBeijingDateRollover() {
+  const today = getBeijingDate();
+  if (today === lastKnownBeijingDate) {
+    return false;
+  }
+
+  lastKnownBeijingDate = today;
+  if (!autoFollowToday) {
+    return false;
+  }
+
+  const shouldSyncExport = elements.exportStartDate.value === selectedDate && elements.exportEndDate.value === selectedDate;
+  setActiveDate(today, { syncExport: shouldSyncExport });
+  showMessage(`已按北京时间切换到 ${today}。`, "success");
+  return true;
 }
 
 function stopRemoteTimers() {
@@ -321,8 +355,8 @@ async function handleSubmit(event) {
   }
 
   selectedDate = nextBooking.date;
-  elements.viewDate.value = selectedDate;
-  elements.bookingDate.value = selectedDate;
+  autoFollowToday = selectedDate === getBeijingDate();
+  setActiveDate(selectedDate);
   elements.personInput.value = "";
   showMessage(dataMode === "supabase" ? "预约已同步给所有人。" : "预约已添加到本机。", "success");
   render();
@@ -403,9 +437,9 @@ function hasExactBooking(nextBooking) {
 }
 
 async function handleDateChange(event) {
-  selectedDate = event.target.value || DEFAULT_DATE;
-  elements.viewDate.value = selectedDate;
-  elements.bookingDate.value = selectedDate;
+  const nextDate = event.target.value || getBeijingDate();
+  autoFollowToday = nextDate === getBeijingDate();
+  setActiveDate(nextDate);
   clearMessage();
 
   if (dataMode === "supabase" && supabaseClient) {
