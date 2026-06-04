@@ -61,7 +61,8 @@ init();
 
 async function init() {
   fillBenchOptions();
-  setActiveDate(selectedDate, { syncExport: true });
+  fillStartTimeOptions();
+  setActiveDate(selectedDate, { syncExport: true, forceStart: true });
   elements.form.addEventListener("submit", handleSubmit);
   elements.viewDate.addEventListener("change", handleDateChange);
   elements.bookingDate.addEventListener("change", handleDateChange);
@@ -84,6 +85,7 @@ function getBeijingDate(now = new Date()) {
 function setActiveDate(nextDate, options = {}) {
   const previousDate = selectedDate;
   selectedDate = nextDate || getBeijingDate();
+  elements.bookingDate.min = getBeijingDate();
   elements.bookingDate.value = selectedDate;
   elements.viewDate.value = selectedDate;
 
@@ -91,6 +93,43 @@ function setActiveDate(nextDate, options = {}) {
     elements.exportStartDate.value = selectedDate;
     elements.exportEndDate.value = selectedDate;
   }
+
+  syncStartTimeForActiveDate(options);
+}
+
+function syncStartTimeForActiveDate(options = {}) {
+  const latestStart = DAY_END - 30;
+  const currentValue = elements.startTime.value;
+  const nextBookableStart = getNextBookableStartMinutes();
+  const hasBookableSlotToday = selectedDate !== getBeijingDate() || nextBookableStart <= latestStart;
+  const minimumStart = selectedDate === getBeijingDate() ? nextBookableStart : 0;
+
+  if (!hasBookableSlotToday) {
+    elements.startTime.innerHTML = "";
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "今天已无可预约时段";
+    elements.startTime.append(option);
+    return;
+  }
+
+  fillStartTimeOptions(minimumStart, latestStart);
+
+  if (options.forceStart || !currentValue || timeToMinutes(currentValue) < minimumStart || timeToMinutes(currentValue) > latestStart) {
+    elements.startTime.value = minutesToTime(minimumStart);
+  } else {
+    elements.startTime.value = currentValue;
+  }
+}
+
+function getNextBookableStartMinutes(now = new Date()) {
+  const shifted = new Date(now.getTime() + BEIJING_OFFSET_MS);
+  const totalSeconds =
+    shifted.getUTCHours() * 3600 +
+    shifted.getUTCMinutes() * 60 +
+    shifted.getUTCSeconds() +
+    shifted.getUTCMilliseconds() / 1000;
+  return Math.ceil(totalSeconds / (30 * 60)) * 30;
 }
 
 function createId() {
@@ -200,6 +239,7 @@ function startPeriodicRefresh() {
 
     try {
       handleBeijingDateRollover();
+      syncStartTimeForActiveDate();
       await fetchRemoteBookings();
       render();
     } catch (error) {
@@ -330,6 +370,18 @@ function fillBenchOptions() {
   });
 }
 
+function fillStartTimeOptions(startMinutes = 0, endMinutes = DAY_END - 30) {
+  elements.startTime.innerHTML = "";
+  const safeStart = Math.max(0, Math.min(startMinutes, endMinutes));
+
+  for (let minutes = safeStart; minutes <= endMinutes; minutes += 30) {
+    const option = document.createElement("option");
+    option.value = minutesToTime(minutes);
+    option.textContent = minutesToTime(minutes);
+    elements.startTime.append(option);
+  }
+}
+
 async function handleSubmit(event) {
   event.preventDefault();
 
@@ -398,6 +450,20 @@ function validateBooking(nextBooking) {
 
   const start = timeToMinutes(nextBooking.start);
   const end = timeToMinutes(nextBooking.end);
+  const today = getBeijingDate();
+  if (nextBooking.date < today) {
+    return { ok: false, message: "不能预约已经过去的日期。" };
+  }
+
+  const nextBookableStart = getNextBookableStartMinutes();
+  if (nextBooking.date === today && nextBookableStart > DAY_END - 30) {
+    return { ok: false, message: "今天已无可预约时段，请预约明天。" };
+  }
+
+  if (nextBooking.date === today && start < nextBookableStart) {
+    return { ok: false, message: `不能预约已经过去的时间，请选择 ${minutesToTime(nextBookableStart)} 之后。` };
+  }
+
   if (start % 30 !== 0) {
     return { ok: false, message: "开始时间请按半小时选择，例如 09:00 或 09:30。" };
   }
@@ -521,11 +587,15 @@ function getSlotAvailability(dayBookings) {
   const end = calculateEndTime(start, elements.durationSelect.value);
 
   if (!start || !end) {
-    return { countText: "-", message: "选择开始时间和使用时长后显示" };
+    return { countText: "-", message: selectedDate === getBeijingDate() ? "今天已无可预约时段" : "选择开始时间和使用时长后显示" };
   }
 
   const startMinutes = timeToMinutes(start);
   const endMinutes = timeToMinutes(end);
+  if (selectedDate === getBeijingDate() && startMinutes < getNextBookableStartMinutes()) {
+    return { countText: "-", message: `请选择 ${minutesToTime(getNextBookableStartMinutes())} 之后的时段` };
+  }
+
   if (startMinutes % 30 !== 0) {
     return { countText: "-", message: "开始时间请按半小时选择" };
   }
