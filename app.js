@@ -8,6 +8,7 @@ const DAY_RANGE = DAY_END - DAY_START;
 const REFRESH_INTERVAL_MS = 60 * 1000;
 const RECONNECT_DELAY_MS = 5 * 1000;
 const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const CSV_MIME = "text/csv;charset=utf-8";
 
 const benches = [
   { id: "west-1-inside", room: "西区细胞房1", position: "里面", color: "#1f7a5c" },
@@ -51,6 +52,7 @@ const elements = {
   exportStartTime: document.querySelector("#exportStartTime"),
   exportEndTime: document.querySelector("#exportEndTime"),
   exportButton: document.querySelector("#exportButton"),
+  exportCsvButton: document.querySelector("#exportCsvButton"),
   exportMessage: document.querySelector("#exportMessage"),
   storageState: document.querySelector("#storageState"),
   benchTemplate: document.querySelector("#benchTemplate"),
@@ -72,6 +74,7 @@ async function init() {
   elements.benchFilter.addEventListener("change", handleBenchFilterChange);
   elements.copyDayButton.addEventListener("click", copyCurrentDay);
   elements.exportButton.addEventListener("click", handleExport);
+  elements.exportCsvButton.addEventListener("click", handleCsvExport);
 
   render();
   await startDataLayer();
@@ -771,6 +774,35 @@ async function handleExport() {
   }
 }
 
+async function handleCsvExport() {
+  const range = getExportRange();
+  if (!range.ok) {
+    showExportMessage(range.message, "error");
+    return;
+  }
+
+  setExportBusy(true);
+  clearExportMessage();
+
+  try {
+    const exportBookings = await fetchExportBookings(range);
+    const rows = buildCsvRows(exportBookings, range);
+    const fileName = buildCsvFileName(range);
+    downloadCsv(rows, fileName);
+
+    if (exportBookings.length === 0) {
+      showExportMessage("CSV 已导出；所选范围内没有预约记录，使用率为 0%。", "success");
+    } else {
+      showExportMessage(`已导出 CSV：${exportBookings.length} 条预约记录，并统计每日每台使用率。`, "success");
+    }
+  } catch (error) {
+    console.error("CSV export failed", error);
+    showExportMessage("CSV 导出失败，请检查网络后重试。", "error");
+  } finally {
+    setExportBusy(false);
+  }
+}
+
 function getExportRange() {
   const startDate = elements.exportStartDate.value;
   const endDate = elements.exportEndDate.value;
@@ -824,9 +856,17 @@ async function fetchExportBookings(range) {
 function bookingOverlapsTimeRange(item, range) {
   const bookingStart = timeToMinutes(item.start);
   const bookingEnd = timeToMinutes(item.end);
-  const rangeStart = timeToMinutes(range.startTime);
-  const rangeEnd = timeToMinutes(range.endTime);
+  const rangeStart = getExportStartMinutes(range);
+  const rangeEnd = getExportEndMinutes(range);
   return bookingStart < rangeEnd && bookingEnd > rangeStart;
+}
+
+function getExportStartMinutes(range) {
+  return timeToMinutes(range.startTime);
+}
+
+function getExportEndMinutes(range) {
+  return range.endTime === "23:59" ? DAY_END : timeToMinutes(range.endTime);
 }
 
 function compareBookings(a, b) {
@@ -863,16 +903,131 @@ function buildExportRows(exportBookings) {
   return rows;
 }
 
+function buildCsvRows(exportBookings, range) {
+  return [
+    ["预约明细"],
+    ...buildExportRows(exportBookings),
+    [],
+    ["每日每台使用率"],
+    ...buildUtilizationRows(exportBookings, range),
+  ];
+}
+
+function buildUtilizationRows(exportBookings, range) {
+  const rows = [["日期", "细胞房", "位置", "细胞台", "使用分钟", "使用小时", "统计窗口分钟", "统计窗口使用率", "全天使用率"]];
+  const usageMap = buildUsageMap(exportBookings, range);
+  const windowMinutes = getExportEndMinutes(range) - getExportStartMinutes(range);
+
+  getDateRange(range.startDate, range.endDate).forEach((date) => {
+    benches.forEach((bench) => {
+      const usedMinutes = usageMap.get(buildUsageKey(date, bench.id)) || 0;
+      rows.push([
+        date,
+        bench.room,
+        bench.position,
+        `${bench.room} ${bench.position}`.trim(),
+        usedMinutes,
+        (usedMinutes / 60).toFixed(2),
+        windowMinutes,
+        formatPercent(usedMinutes / windowMinutes),
+        formatPercent(usedMinutes / DAY_RANGE),
+      ]);
+    });
+  });
+
+  return rows;
+}
+
+function buildUsageMap(exportBookings, range) {
+  const usageMap = new Map();
+
+  exportBookings.forEach((item) => {
+    const usedMinutes = getBookingMinutesWithinRange(item, range);
+    if (usedMinutes <= 0) {
+      return;
+    }
+
+    const key = buildUsageKey(item.date, item.benchId);
+    usageMap.set(key, (usageMap.get(key) || 0) + usedMinutes);
+  });
+
+  return usageMap;
+}
+
+function getBookingMinutesWithinRange(item, range) {
+  const bookingStart = clamp(timeToMinutes(item.start), DAY_START, DAY_END);
+  const bookingEnd = clamp(timeToMinutes(item.end), DAY_START, DAY_END);
+  const rangeStart = getExportStartMinutes(range);
+  const rangeEnd = getExportEndMinutes(range);
+  return Math.max(0, Math.min(bookingEnd, rangeEnd) - Math.max(bookingStart, rangeStart));
+}
+
+function buildUsageKey(date, benchId) {
+  return `${date}::${benchId}`;
+}
+
+function getDateRange(startDate, endDate) {
+  const dates = [];
+  const current = new Date(`${startDate}T00:00:00Z`);
+  const last = new Date(`${endDate}T00:00:00Z`);
+
+  while (current <= last) {
+    dates.push(current.toISOString().slice(0, 10));
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+
+  return dates;
+}
+
+function formatPercent(value) {
+  if (!Number.isFinite(value)) {
+    return "0.00%";
+  }
+
+  return `${(value * 100).toFixed(2)}%`;
+}
+
 function buildExportFileName(range) {
+  return `${buildExportBaseName(range)}.xlsx`;
+}
+
+function buildCsvFileName(range) {
+  return `${buildExportBaseName(range)}.csv`;
+}
+
+function buildExportBaseName(range) {
   const startTime = range.startTime.replace(":", "");
   const endTime = range.endTime.replace(":", "");
-  return `cell-bench-bookings_${range.startDate}_${range.endDate}_${startTime}-${endTime}.xlsx`;
+  return `cell-bench-bookings_${range.startDate}_${range.endDate}_${startTime}-${endTime}`;
 }
 
 function downloadXlsx(sheetName, rows, fileName) {
   const files = createXlsxFiles(sheetName, rows);
   const zipBytes = createStoredZip(files);
   const blob = new Blob([zipBytes], { type: XLSX_MIME });
+  downloadBlob(blob, fileName);
+}
+
+function downloadCsv(rows, fileName) {
+  const csvText = `\uFEFF${rowsToCsv(rows)}`;
+  const blob = new Blob([csvText], { type: CSV_MIME });
+  downloadBlob(blob, fileName);
+}
+
+function rowsToCsv(rows) {
+  return rows.map((row) => row.map(escapeCsvCell).join(",")).join("\r\n");
+}
+
+function escapeCsvCell(value) {
+  const text = value === null || value === undefined ? "" : String(value);
+  if (/[",\r\n]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+
+  return text;
+}
+
+function downloadBlob(blob, fileName) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -1222,7 +1377,14 @@ function setBusy(isBusy) {
 
 function setExportBusy(isBusy) {
   elements.exportButton.disabled = isBusy;
-  elements.exportButton.textContent = isBusy ? "导出中..." : "导出 Excel";
+  elements.exportCsvButton.disabled = isBusy;
+  setButtonText(elements.exportButton, isBusy ? "导出中..." : "导出 Excel");
+  setButtonText(elements.exportCsvButton, isBusy ? "导出中..." : "导出 CSV");
+}
+
+function setButtonText(button, text) {
+  const label = button.querySelector("span") || button;
+  label.textContent = text;
 }
 
 function showMessage(message, type) {

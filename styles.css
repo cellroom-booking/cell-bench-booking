@@ -347,6 +347,12 @@ select:focus {
   min-width: 0;
 }
 
+.export-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
 .export-button {
   width: 100%;
 }
@@ -661,6 +667,10 @@ select:focus {
   .export-grid {
     grid-template-columns: 1fr;
     gap: 10px;
+  }
+
+  .export-actions {
+    grid-template-columns: 1fr;
   }
 
   .schedule-toolbar {

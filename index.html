@@ -104,9 +104,14 @@
               <input id="exportEndTime" type="time" step="60" value="23:59" />
             </label>
           </div>
-          <button class="ghost-button export-button" id="exportButton" type="button">
-            <span>导出 Excel</span>
-          </button>
+          <div class="export-actions">
+            <button class="ghost-button export-button" id="exportButton" type="button">
+              <span>导出 Excel</span>
+            </button>
+            <button class="ghost-button export-button" id="exportCsvButton" type="button">
+              <span>导出 CSV</span>
+            </button>
+          </div>
           <div id="exportMessage" class="form-message" role="status" aria-live="polite"></div>
         </section>
       </section>
