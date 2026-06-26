@@ -9,6 +9,12 @@ const REFRESH_INTERVAL_MS = 60 * 1000;
 const RECONNECT_DELAY_MS = 5 * 1000;
 const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const CSV_MIME = "text/csv;charset=utf-8";
+const XLSX_STYLE = {
+  DEFAULT: 0,
+  HEADER: 1,
+  NUMBER: 2,
+  PERCENT: 3,
+};
 
 const benches = [
   { id: "west-1-inside", room: "西区细胞房1", position: "里面", color: "#1f7a5c" },
@@ -757,15 +763,15 @@ async function handleExport() {
 
   try {
     const exportBookings = await fetchExportBookings(range);
-    if (exportBookings.length === 0) {
-      showExportMessage("所选范围内没有预约记录。", "error");
-      return;
-    }
-
-    const rows = buildExportRows(exportBookings);
+    const sheets = buildExportWorkbookSheets(exportBookings, range);
     const fileName = buildExportFileName(range);
-    downloadXlsx("预约记录", rows, fileName);
-    showExportMessage(`已导出 ${exportBookings.length} 条预约记录。`, "success");
+    downloadXlsx(sheets, fileName);
+
+    if (exportBookings.length === 0) {
+      showExportMessage("Excel 已导出；所选范围内没有预约记录，使用率为 0%。", "success");
+    } else {
+      showExportMessage(`已导出 Excel：${exportBookings.length} 条预约记录，并包含区间使用率柱状图。`, "success");
+    }
   } catch (error) {
     console.error("Export failed", error);
     showExportMessage("导出失败，请检查网络后重试。", "error");
@@ -903,17 +909,92 @@ function buildExportRows(exportBookings) {
   return rows;
 }
 
+function buildExportWorkbookSheets(exportBookings, range) {
+  const summaryRows = buildPeriodUtilizationRows(exportBookings, range, { format: "workbook" });
+  const summaryDataStartRow = 4;
+  const summaryDataEndRow = summaryRows.length;
+
+  return [
+    {
+      name: "区间汇总",
+      rows: summaryRows,
+      headerRows: [3],
+      autoFilterRow: 3,
+      columnWidths: [16, 10, 22, 12, 12, 18, 18, 14],
+      chart: {
+        title: "所选区间细胞台使用率",
+        seriesName: "统计窗口使用率",
+        categoryColumn: 3,
+        valueColumn: 7,
+        startRow: summaryDataStartRow,
+        endRow: summaryDataEndRow,
+      },
+    },
+    {
+      name: "每日使用率",
+      rows: buildUtilizationRows(exportBookings, range, { format: "workbook" }),
+      headerRows: [1],
+      autoFilterRow: 1,
+      columnWidths: [14, 16, 10, 22, 12, 12, 16, 16, 14],
+    },
+    {
+      name: "预约明细",
+      rows: buildExportRows(exportBookings),
+      headerRows: [1],
+      autoFilterRow: 1,
+      columnWidths: [14, 16, 10, 22, 12, 12, 14, 24],
+    },
+  ];
+}
+
 function buildCsvRows(exportBookings, range) {
   return [
     ["预约明细"],
     ...buildExportRows(exportBookings),
+    [],
+    ["所选区间每台使用率"],
+    ...buildPeriodUtilizationRows(exportBookings, range),
     [],
     ["每日每台使用率"],
     ...buildUtilizationRows(exportBookings, range),
   ];
 }
 
-function buildUtilizationRows(exportBookings, range) {
+function buildPeriodUtilizationRows(exportBookings, range, options = {}) {
+  const workbookMode = options.format === "workbook";
+  const dateCount = getDateRange(range.startDate, range.endDate).length;
+  const windowMinutes = getExportEndMinutes(range) - getExportStartMinutes(range);
+  const totalWindowMinutes = windowMinutes * dateCount;
+  const totalDayMinutes = DAY_RANGE * dateCount;
+  const usageMap = buildBenchUsageMap(exportBookings, range);
+  const rows = [];
+
+  if (workbookMode) {
+    rows.push(["日期范围", `${range.startDate} 至 ${range.endDate}`, "每天统计时间", `${range.startTime}-${range.endTime}`, "统计天数", numberCell(dateCount)]);
+    rows.push([]);
+  }
+
+  rows.push(["细胞房", "位置", "细胞台", "使用分钟", "使用小时", "统计窗口可用分钟", "统计窗口使用率", "全天使用率"]);
+
+  benches.forEach((bench) => {
+    const usedMinutes = usageMap.get(bench.id) || 0;
+    rows.push(
+      buildUtilizationDataRow({
+        date: null,
+        bench,
+        usedMinutes,
+        windowMinutes: totalWindowMinutes,
+        dayMinutes: totalDayMinutes,
+        workbookMode,
+      }),
+    );
+  });
+
+  return rows;
+}
+
+function buildUtilizationRows(exportBookings, range, options = {}) {
+  const workbookMode = options.format === "workbook";
   const rows = [["日期", "细胞房", "位置", "细胞台", "使用分钟", "使用小时", "统计窗口分钟", "统计窗口使用率", "全天使用率"]];
   const usageMap = buildUsageMap(exportBookings, range);
   const windowMinutes = getExportEndMinutes(range) - getExportStartMinutes(range);
@@ -921,21 +1002,41 @@ function buildUtilizationRows(exportBookings, range) {
   getDateRange(range.startDate, range.endDate).forEach((date) => {
     benches.forEach((bench) => {
       const usedMinutes = usageMap.get(buildUsageKey(date, bench.id)) || 0;
-      rows.push([
-        date,
-        bench.room,
-        bench.position,
-        `${bench.room} ${bench.position}`.trim(),
-        usedMinutes,
-        (usedMinutes / 60).toFixed(2),
-        windowMinutes,
-        formatPercent(usedMinutes / windowMinutes),
-        formatPercent(usedMinutes / DAY_RANGE),
-      ]);
+      rows.push(
+        buildUtilizationDataRow({
+          date,
+          bench,
+          usedMinutes,
+          windowMinutes,
+          dayMinutes: DAY_RANGE,
+          workbookMode,
+        }),
+      );
     });
   });
 
   return rows;
+}
+
+function buildUtilizationDataRow({ date, bench, usedMinutes, windowMinutes, dayMinutes, workbookMode }) {
+  const textCells = [bench.room, bench.position, `${bench.room} ${bench.position}`.trim()];
+  const numberCells = workbookMode
+    ? [
+        numberCell(usedMinutes),
+        numberCell(usedMinutes / 60, XLSX_STYLE.NUMBER),
+        numberCell(windowMinutes),
+        percentCell(usedMinutes / windowMinutes),
+        percentCell(usedMinutes / dayMinutes),
+      ]
+    : [
+        usedMinutes,
+        (usedMinutes / 60).toFixed(2),
+        windowMinutes,
+        formatPercent(usedMinutes / windowMinutes),
+        formatPercent(usedMinutes / dayMinutes),
+      ];
+
+  return date ? [date, ...textCells, ...numberCells] : [...textCells, ...numberCells];
 }
 
 function buildUsageMap(exportBookings, range) {
@@ -949,6 +1050,21 @@ function buildUsageMap(exportBookings, range) {
 
     const key = buildUsageKey(item.date, item.benchId);
     usageMap.set(key, (usageMap.get(key) || 0) + usedMinutes);
+  });
+
+  return usageMap;
+}
+
+function buildBenchUsageMap(exportBookings, range) {
+  const usageMap = new Map();
+
+  exportBookings.forEach((item) => {
+    const usedMinutes = getBookingMinutesWithinRange(item, range);
+    if (usedMinutes <= 0) {
+      return;
+    }
+
+    usageMap.set(item.benchId, (usageMap.get(item.benchId) || 0) + usedMinutes);
   });
 
   return usageMap;
@@ -987,6 +1103,18 @@ function formatPercent(value) {
   return `${(value * 100).toFixed(2)}%`;
 }
 
+function numberCell(value, styleId = XLSX_STYLE.DEFAULT) {
+  return {
+    type: "number",
+    value: Number.isFinite(value) ? value : 0,
+    styleId,
+  };
+}
+
+function percentCell(value) {
+  return numberCell(Number.isFinite(value) ? value : 0, XLSX_STYLE.PERCENT);
+}
+
 function buildExportFileName(range) {
   return `${buildExportBaseName(range)}.xlsx`;
 }
@@ -1001,8 +1129,10 @@ function buildExportBaseName(range) {
   return `cell-bench-bookings_${range.startDate}_${range.endDate}_${startTime}-${endTime}`;
 }
 
-function downloadXlsx(sheetName, rows, fileName) {
-  const files = createXlsxFiles(sheetName, rows);
+function downloadXlsx(sheetNameOrSheets, rowsOrFileName, maybeFileName) {
+  const sheets = Array.isArray(sheetNameOrSheets) ? sheetNameOrSheets : [{ name: sheetNameOrSheets, rows: rowsOrFileName }];
+  const fileName = Array.isArray(sheetNameOrSheets) ? rowsOrFileName : maybeFileName;
+  const files = createXlsxFiles(sheets);
   const zipBytes = createStoredZip(files);
   const blob = new Blob([zipBytes], { type: XLSX_MIME });
   downloadBlob(blob, fileName);
@@ -1038,20 +1168,24 @@ function downloadBlob(blob, fileName) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function createXlsxFiles(sheetName, rows) {
-  const safeSheetName = sanitizeSheetName(sheetName);
+function createXlsxFiles(inputSheets) {
+  const sheets = normalizeWorkbookSheets(inputSheets);
+  let chartIndex = 0;
+
+  sheets.forEach((sheet, index) => {
+    sheet.sheetIndex = index + 1;
+    if (sheet.chart) {
+      chartIndex += 1;
+      sheet.drawingId = chartIndex;
+      sheet.chartId = chartIndex;
+      sheet.drawingRelId = "rId1";
+    }
+  });
+
   return [
     {
       name: "[Content_Types].xml",
-      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
-  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
-</Types>`,
+      content: createContentTypesXml(sheets),
     },
     {
       name: "_rels/.rels",
@@ -1064,10 +1198,7 @@ function createXlsxFiles(sheetName, rows) {
     },
     {
       name: "docProps/app.xml",
-      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
-  <Application>Cellroom Booking</Application>
-</Properties>`,
+      content: createAppPropertiesXml(sheets),
     },
     {
       name: "docProps/core.xml",
@@ -1082,29 +1213,179 @@ function createXlsxFiles(sheetName, rows) {
     },
     {
       name: "xl/workbook.xml",
-      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets>
-    <sheet name="${escapeXml(safeSheetName)}" sheetId="1" r:id="rId1"/>
-  </sheets>
-</workbook>`,
+      content: createWorkbookXml(sheets),
     },
     {
       name: "xl/_rels/workbook.xml.rels",
-      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-</Relationships>`,
+      content: createWorkbookRelationshipsXml(sheets),
     },
     {
-      name: "xl/worksheets/sheet1.xml",
-      content: createWorksheetXml(rows),
+      name: "xl/styles.xml",
+      content: createStylesXml(),
     },
+    ...sheets.flatMap((sheet) => {
+      const files = [
+        {
+          name: `xl/worksheets/sheet${sheet.sheetIndex}.xml`,
+          content: createWorksheetXml(sheet),
+        },
+      ];
+
+      if (sheet.chart) {
+        files.push(
+          {
+            name: `xl/worksheets/_rels/sheet${sheet.sheetIndex}.xml.rels`,
+            content: createWorksheetRelationshipsXml(sheet),
+          },
+          {
+            name: `xl/drawings/drawing${sheet.drawingId}.xml`,
+            content: createDrawingXml(sheet),
+          },
+          {
+            name: `xl/drawings/_rels/drawing${sheet.drawingId}.xml.rels`,
+            content: createDrawingRelationshipsXml(sheet),
+          },
+          {
+            name: `xl/charts/chart${sheet.chartId}.xml`,
+            content: createChartXml(sheet),
+          },
+        );
+      }
+
+      return files;
+    }),
   ];
 }
 
-function createWorksheetXml(rows) {
-  const lastColumn = getColumnName(Math.max(1, rows[0]?.length || 1));
+function normalizeWorkbookSheets(inputSheets) {
+  const usedNames = new Set();
+  return inputSheets.map((sheet, index) => {
+    const name = getUniqueSheetName(sheet.name || `Sheet${index + 1}`, usedNames);
+    return {
+      ...sheet,
+      name,
+      rows: sheet.rows && sheet.rows.length ? sheet.rows : [[]],
+      headerRows: sheet.headerRows || [1],
+    };
+  });
+}
+
+function getUniqueSheetName(name, usedNames) {
+  const baseName = sanitizeSheetName(name);
+  let nextName = baseName;
+  let counter = 2;
+
+  while (usedNames.has(nextName)) {
+    const suffix = ` ${counter}`;
+    nextName = `${baseName.slice(0, 31 - suffix.length)}${suffix}`;
+    counter += 1;
+  }
+
+  usedNames.add(nextName);
+  return nextName;
+}
+
+function createContentTypesXml(sheets) {
+  const worksheetOverrides = sheets
+    .map((sheet) => `  <Override PartName="/xl/worksheets/sheet${sheet.sheetIndex}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`)
+    .join("\n");
+  const drawingOverrides = sheets
+    .filter((sheet) => sheet.chart)
+    .map(
+      (sheet) => `  <Override PartName="/xl/drawings/drawing${sheet.drawingId}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>
+  <Override PartName="/xl/charts/chart${sheet.chartId}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>`,
+    )
+    .join("\n");
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+${worksheetOverrides}
+${drawingOverrides}
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+</Types>`;
+}
+
+function createAppPropertiesXml(sheets) {
+  const sheetNames = sheets.map((sheet) => `<vt:lpstr>${escapeXml(sheet.name)}</vt:lpstr>`).join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
+  <Application>Cellroom Booking</Application>
+  <HeadingPairs>
+    <vt:vector size="2" baseType="variant">
+      <vt:variant><vt:lpstr>Worksheets</vt:lpstr></vt:variant>
+      <vt:variant><vt:i4>${sheets.length}</vt:i4></vt:variant>
+    </vt:vector>
+  </HeadingPairs>
+  <TitlesOfParts>
+    <vt:vector size="${sheets.length}" baseType="lpstr">${sheetNames}</vt:vector>
+  </TitlesOfParts>
+</Properties>`;
+}
+
+function createWorkbookXml(sheets) {
+  const sheetXml = sheets
+    .map((sheet) => `    <sheet name="${escapeXml(sheet.name)}" sheetId="${sheet.sheetIndex}" r:id="rId${sheet.sheetIndex}"/>`)
+    .join("\n");
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+${sheetXml}
+  </sheets>
+  <calcPr calcId="124519" fullCalcOnLoad="1"/>
+</workbook>`;
+}
+
+function createWorkbookRelationshipsXml(sheets) {
+  const worksheetRels = sheets
+    .map((sheet) => `  <Relationship Id="rId${sheet.sheetIndex}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${sheet.sheetIndex}.xml"/>`)
+    .join("\n");
+  const stylesRelId = sheets.length + 1;
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+${worksheetRels}
+  <Relationship Id="rId${stylesRelId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+}
+
+function createStylesXml() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="2">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="2">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+  </fills>
+  <borders count="1">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+  </borders>
+  <cellStyleXfs count="1">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>
+  </cellStyleXfs>
+  <cellXfs count="4">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="2" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+    <xf numFmtId="10" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+  </cellXfs>
+  <cellStyles count="1">
+    <cellStyle name="Normal" xfId="0" builtinId="0"/>
+  </cellStyles>
+</styleSheet>`;
+}
+
+function createWorksheetXml(sheet) {
+  const rows = sheet.rows;
+  const lastColumn = getColumnName(getMaxColumnCount(rows));
   const lastRow = Math.max(1, rows.length);
   const sheetData = rows
     .map((row, rowIndex) => {
@@ -1112,7 +1393,7 @@ function createWorksheetXml(rows) {
       const cells = row
         .map((value, columnIndex) => {
           const cellRef = `${getColumnName(columnIndex + 1)}${rowNumber}`;
-          return `<c r="${cellRef}" t="inlineStr"><is><t>${escapeXml(String(value ?? ""))}</t></is></c>`;
+          return createCellXml(value, cellRef, rowNumber, sheet);
         })
         .join("");
       return `<row r="${rowNumber}">${cells}</row>`;
@@ -1120,20 +1401,268 @@ function createWorksheetXml(rows) {
     .join("");
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <dimension ref="A1:${lastColumn}${lastRow}"/>
   <sheetViews><sheetView workbookViewId="0"/></sheetViews>
   <sheetFormatPr defaultRowHeight="18"/>
-  <cols>
-    <col min="1" max="1" width="14" customWidth="1"/>
-    <col min="2" max="4" width="18" customWidth="1"/>
-    <col min="5" max="6" width="12" customWidth="1"/>
-    <col min="7" max="7" width="14" customWidth="1"/>
-    <col min="8" max="8" width="24" customWidth="1"/>
-  </cols>
+  ${createColumnsXml(sheet, lastColumn)}
   <sheetData>${sheetData}</sheetData>
-  <autoFilter ref="A1:${lastColumn}${lastRow}"/>
+  ${createAutoFilterXml(sheet, lastColumn, lastRow)}
+  ${sheet.chart ? `<drawing r:id="${sheet.drawingRelId}"/>` : ""}
 </worksheet>`;
+}
+
+function getMaxColumnCount(rows) {
+  return Math.max(1, ...rows.map((row) => row.length));
+}
+
+function createCellXml(value, cellRef, rowNumber, sheet) {
+  const isHeaderCell = sheet.headerRows.includes(rowNumber);
+  const cell = normalizeCell(value, isHeaderCell);
+  const styleAttribute = cell.styleId ? ` s="${cell.styleId}"` : "";
+
+  if (cell.type === "number") {
+    return `<c r="${cellRef}"${styleAttribute}><v>${formatXlsxNumber(cell.value)}</v></c>`;
+  }
+
+  const spaceAttribute = /^\s|\s$/.test(cell.value) ? ' xml:space="preserve"' : "";
+  return `<c r="${cellRef}"${styleAttribute} t="inlineStr"><is><t${spaceAttribute}>${escapeXml(cell.value)}</t></is></c>`;
+}
+
+function normalizeCell(value, isHeaderCell) {
+  if (value && typeof value === "object" && !Array.isArray(value) && value.type === "number") {
+    return {
+      type: "number",
+      value: Number.isFinite(value.value) ? value.value : 0,
+      styleId: value.styleId || 0,
+    };
+  }
+
+  if (typeof value === "number") {
+    return {
+      type: "number",
+      value,
+      styleId: 0,
+    };
+  }
+
+  return {
+    type: "string",
+    value: String(value ?? ""),
+    styleId: isHeaderCell ? XLSX_STYLE.HEADER : 0,
+  };
+}
+
+function createColumnsXml(sheet, lastColumnName) {
+  const lastColumnNumber = columnNameToNumber(lastColumnName);
+  const widths = sheet.columnWidths || [];
+  const columns = Array.from({ length: lastColumnNumber }, (_, index) => {
+    const columnNumber = index + 1;
+    const width = widths[index] || 14;
+    return `    <col min="${columnNumber}" max="${columnNumber}" width="${width}" customWidth="1"/>`;
+  }).join("\n");
+
+  return `<cols>
+${columns}
+  </cols>`;
+}
+
+function createAutoFilterXml(sheet, lastColumn, lastRow) {
+  if (sheet.autoFilter === false) {
+    return "";
+  }
+
+  const autoFilterRow = sheet.autoFilterRow || 1;
+  if (lastRow < autoFilterRow) {
+    return "";
+  }
+
+  return `<autoFilter ref="A${autoFilterRow}:${lastColumn}${lastRow}"/>`;
+}
+
+function createWorksheetRelationshipsXml(sheet) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="${sheet.drawingRelId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing${sheet.drawingId}.xml"/>
+</Relationships>`;
+}
+
+function createDrawingXml(sheet) {
+  const fromRow = Math.max(sheet.rows.length + 1, 11);
+  const toRow = fromRow + 18;
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <xdr:twoCellAnchor editAs="oneCell">
+    <xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${fromRow}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>
+    <xdr:to><xdr:col>8</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${toRow}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>
+    <xdr:graphicFrame macro="">
+      <xdr:nvGraphicFramePr>
+        <xdr:cNvPr id="2" name="使用率柱状图"/>
+        <xdr:cNvGraphicFramePr/>
+      </xdr:nvGraphicFramePr>
+      <xdr:xfrm>
+        <a:off x="0" y="0"/>
+        <a:ext cx="0" cy="0"/>
+      </xdr:xfrm>
+      <a:graphic>
+        <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">
+          <c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId1"/>
+        </a:graphicData>
+      </a:graphic>
+    </xdr:graphicFrame>
+    <xdr:clientData/>
+  </xdr:twoCellAnchor>
+</xdr:wsDr>`;
+}
+
+function createDrawingRelationshipsXml(sheet) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart${sheet.chartId}.xml"/>
+</Relationships>`;
+}
+
+function createChartXml(sheet) {
+  const chart = sheet.chart;
+  const categoryRange = createCellRangeFormula(sheet.name, chart.categoryColumn, chart.startRow, chart.endRow);
+  const valueRange = createCellRangeFormula(sheet.name, chart.valueColumn, chart.startRow, chart.endRow);
+  const categories = getChartCategoryValues(sheet, chart);
+  const values = getChartNumberValues(sheet, chart);
+  const categoryAxisId = 48650112;
+  const valueAxisId = 48672768;
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <c:date1904 val="0"/>
+  <c:chart>
+    <c:title>
+      <c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${escapeXml(chart.title)}</a:t></a:r></a:p></c:rich></c:tx>
+      <c:layout/>
+    </c:title>
+    <c:plotArea>
+      <c:layout/>
+      <c:barChart>
+        <c:barDir val="col"/>
+        <c:grouping val="clustered"/>
+        <c:varyColors val="0"/>
+        <c:ser>
+          <c:idx val="0"/>
+          <c:order val="0"/>
+          <c:tx><c:v>${escapeXml(chart.seriesName)}</c:v></c:tx>
+          <c:cat>
+            <c:strRef>
+              <c:f>${escapeXml(categoryRange)}</c:f>
+              ${createStringCacheXml(categories)}
+            </c:strRef>
+          </c:cat>
+          <c:val>
+            <c:numRef>
+              <c:f>${escapeXml(valueRange)}</c:f>
+              ${createNumberCacheXml(values)}
+            </c:numRef>
+          </c:val>
+        </c:ser>
+        <c:dLbls>
+          <c:showLegendKey val="0"/>
+          <c:showVal val="0"/>
+          <c:showCatName val="0"/>
+          <c:showSerName val="0"/>
+          <c:showPercent val="0"/>
+          <c:showBubbleSize val="0"/>
+        </c:dLbls>
+        <c:axId val="${categoryAxisId}"/>
+        <c:axId val="${valueAxisId}"/>
+      </c:barChart>
+      <c:catAx>
+        <c:axId val="${categoryAxisId}"/>
+        <c:scaling><c:orientation val="minMax"/></c:scaling>
+        <c:delete val="0"/>
+        <c:axPos val="b"/>
+        <c:tickLblPos val="nextTo"/>
+        <c:crossAx val="${valueAxisId}"/>
+        <c:crosses val="autoZero"/>
+        <c:auto val="1"/>
+        <c:lblAlgn val="ctr"/>
+        <c:lblOffset val="100"/>
+      </c:catAx>
+      <c:valAx>
+        <c:axId val="${valueAxisId}"/>
+        <c:scaling><c:orientation val="minMax"/></c:scaling>
+        <c:delete val="0"/>
+        <c:axPos val="l"/>
+        <c:numFmt formatCode="0%" sourceLinked="0"/>
+        <c:majorGridlines/>
+        <c:tickLblPos val="nextTo"/>
+        <c:crossAx val="${categoryAxisId}"/>
+        <c:crosses val="autoZero"/>
+      </c:valAx>
+    </c:plotArea>
+    <c:legend>
+      <c:legendPos val="b"/>
+      <c:layout/>
+    </c:legend>
+    <c:plotVisOnly val="1"/>
+  </c:chart>
+</c:chartSpace>`;
+}
+
+function getChartCategoryValues(sheet, chart) {
+  return getChartRangeValues(sheet, chart.categoryColumn, chart.startRow, chart.endRow).map((value) => String(value ?? ""));
+}
+
+function getChartNumberValues(sheet, chart) {
+  return getChartRangeValues(sheet, chart.valueColumn, chart.startRow, chart.endRow).map((value) => {
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? numberValue : 0;
+  });
+}
+
+function getChartRangeValues(sheet, columnNumber, startRow, endRow) {
+  const columnIndex = columnNumber - 1;
+  const values = [];
+
+  for (let rowNumber = startRow; rowNumber <= endRow; rowNumber += 1) {
+    const cell = sheet.rows[rowNumber - 1]?.[columnIndex];
+    values.push(getCellValue(cell));
+  }
+
+  return values;
+}
+
+function getCellValue(cell) {
+  if (cell && typeof cell === "object" && !Array.isArray(cell) && Object.prototype.hasOwnProperty.call(cell, "value")) {
+    return cell.value;
+  }
+
+  return cell;
+}
+
+function createCellRangeFormula(sheetName, columnNumber, startRow, endRow) {
+  const columnName = getColumnName(columnNumber);
+  return `${quoteSheetName(sheetName)}!$${columnName}$${startRow}:$${columnName}$${endRow}`;
+}
+
+function quoteSheetName(sheetName) {
+  return `'${String(sheetName).replace(/'/g, "''")}'`;
+}
+
+function createStringCacheXml(values) {
+  const points = values.map((value, index) => `<c:pt idx="${index}"><c:v>${escapeXml(value)}</c:v></c:pt>`).join("");
+  return `<c:strCache><c:ptCount val="${values.length}"/>${points}</c:strCache>`;
+}
+
+function createNumberCacheXml(values) {
+  const points = values.map((value, index) => `<c:pt idx="${index}"><c:v>${formatXlsxNumber(value)}</c:v></c:pt>`).join("");
+  return `<c:numCache><c:formatCode>0.00%</c:formatCode><c:ptCount val="${values.length}"/>${points}</c:numCache>`;
+}
+
+function formatXlsxNumber(value) {
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+
+  return String(Math.round(value * 1000000000000) / 1000000000000);
 }
 
 function createStoredZip(files) {
@@ -1262,6 +1791,12 @@ function getColumnName(number) {
     value = Math.floor((value - 1) / 26);
   }
   return name;
+}
+
+function columnNameToNumber(name) {
+  return String(name)
+    .split("")
+    .reduce((total, character) => total * 26 + character.charCodeAt(0) - 64, 0);
 }
 
 function sanitizeSheetName(value) {
